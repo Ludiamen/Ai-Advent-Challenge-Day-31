@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Any
 
-ПРАВА = ("чат", "документы", "админ")
+ПРАВА = ("чат", "документы", "админ", "проект")   # «проект» — /v1/project/help, День 31
 ПРЕФИКС = "sk-day30-"
 
 

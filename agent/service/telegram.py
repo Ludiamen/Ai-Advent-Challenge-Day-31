@@ -380,10 +380,17 @@ class КлиентСервиса:
         return итог
 
     async def документы(self, вопрос: str) -> dict[str, Any]:
+        return await self._вопрос("/v1/documents/answer", вопрос)
+
+    async def проект(self, вопрос: str) -> dict[str, Any]:
+        """Ассистент разработчика (День 31): ключу бота нужно право «проект»."""
+        return await self._вопрос("/v1/project/help", вопрос)
+
+    async def _вопрос(self, путь: str, вопрос: str) -> dict[str, Any]:
         итог: dict[str, Any] = {"код": None, "код_ошибки": None, "ошибка": "", "повтор_через": None,
                                 "данные": None, "ожидание": 0.0}
         try:
-            r = await self._http.post("/v1/documents/answer", json={"question": вопрос})
+            r = await self._http.post(путь, json={"question": вопрос})
         except httpx.HTTPError as exc:
             итог.update({"код_ошибки": "сеть", "ошибка": f"{type(exc).__name__}: {exc}"})
             return итог
@@ -409,10 +416,21 @@ class КлиентСервиса:
     "• /doc вопрос — ответ по документам организации с источником и цитатой. Перед отправкой в Telegram "
     "ответ проходит фильтр ПД: скрываются фамилии из списка, отчества, инициалы, e-mail и телефоны. "
     "Фильтр не ловит: {не_ловит}.\n"
+    "• /help вопрос — ассистент разработчика: вопрос о проекте CRM (документация, схемы данных, API и "
+    "git — только чтение), например: /help Какие модели данных есть в проекте?\n"
     "• /status — состояние сервиса и очереди.\n\n"
     "Сообщения идут через серверы Telegram; модель и документы — только на домашнем сервере."
 )
 СРАЗУ = ("/start", "/help", "/status")      # мгновенные команды — вне очереди бота (ручная проверка)
+
+
+def мгновенная_команда(текст: str | None) -> bool:
+    """/start, /status и /help БЕЗ вопроса — без модели, их можно дать вне очереди. «/help вопрос»
+    (День 31) — ответ ассистента через сервис: обычная очередь чата, иначе боковой опрос
+    встал бы на минуты."""
+    команда, _, остаток = (текст or "").partition(" ")
+    команда = команда.split("@")[0].lower()
+    return команда in СРАЗУ and not (команда == "/help" and остаток.strip())
 
 
 def реплик(n: int) -> str:
@@ -607,11 +625,11 @@ class Бот:
         if not isinstance(чат.get("id"), int) or isinstance(чат.get("id"), bool):
             self._записать(кто="владелец", вид="update неверного типа")
             return
-        команда = (текст or "").partition(" ")[0].split("@")[0].lower()
-        if последовательно or команда in СРАЗУ:
+        мгновенная = мгновенная_команда(текст)
+        if последовательно or мгновенная:
             # Мгновенная команда очередь не занимает: иначе /status, отвеченный во время
             # генерации, считал бы занятым сам себя («ждут ещё: 1» в видео, сцена 4).
-            занимает = последовательно and команда not in СРАЗУ
+            занимает = последовательно and not мгновенная
             if занимает:
                 self._в_работе[чат["id"]] += 1
             try:
@@ -680,7 +698,8 @@ class Бот:
 
     async def _ответить(self, чат: int, текст: str | None) -> None:
         if not текст:
-            await self.api.sendMessage(чат, "Пока понимаю только текст: вопрос модели, /doc вопрос, /new, /status.")
+            await self.api.sendMessage(чат, "Пока понимаю только текст: вопрос модели, /doc вопрос, /help вопрос, "
+                                           "/new, /status.")
             self._записать(кто="владелец", вид="не текст")
             return
         if not текст.startswith("/"):
@@ -688,6 +707,9 @@ class Бот:
             return
         команда, _, остаток = текст.partition(" ")
         команда = команда.split("@")[0].lower()
+        if команда == "/help" and остаток.strip():
+            await self._проект(чат, остаток.strip())
+            return
         if команда in ("/start", "/help"):
             ответ = ПОМОЩЬ.format(пар=ИСТОРИЯ // 2, не_ловит=pd.НЕ_ЛОВИТ)
             if not pd.список_есть():
@@ -867,6 +889,37 @@ class Бот:
                        правок=вывод.правок, отказов_telegram=вывод.отказов_telegram,
                        скрыто=sum(скрыто.values()), виды_пд=sorted(скрыто), **учёт)
 
+    async def _проект(self, чат: int, вопрос: str) -> None:
+        """«/help вопрос» — ассистент разработчика через ручку сервиса /v1/project/help (День 31, FR-13)."""
+        начало = self.часы()
+        вывод = _Вывод(self, чат)
+        await вывод.начать("⏳ Ассистент разработчика: смотрю git и документацию проекта…",
+                           ход=lambda с: f"⏳ Ищу в документации проекта и в git… {с:.0f} с")
+        учёт = {"повторов_429": 0}
+        try:
+            итог = await self._с_повторами(вывод, lambda: self.сервис.проект(вопрос), начало, учёт)
+        except BaseException:
+            await вывод.хватит_ждать()
+            raise
+        всего = self.часы() - начало
+        скрыто: dict[str, int] = {}
+        if итог.get("код") == 200:
+            текст, скрыто = собрать_проект(итог["данные"], итог["ожидание"], всего)
+        elif итог.get("код_ошибки") == "срок":
+            текст = "Очередь сервиса не освободилась за 20 минут — попробуйте позже."
+        else:
+            текст = self._текст_отказа(итог)
+            if итог.get("код_ошибки") == "permission_denied":
+                текст += ("\nКлючу бота нужно право «проект»: python cli.py --телеграм-ключ, "
+                          "затем python cli.py --телеграм перезапуск.")
+        await вывод.закончить(текст)
+        usage = ((итог.get("данные") or {}).get("usage") or {})
+        self._записать(кто="владелец", вид="проект", код=итог.get("код"), ошибка=итог.get("код_ошибки") or "",
+                       вход=usage.get("prompt_tokens"), ответ=usage.get("completion_tokens"),
+                       ожидание_с=round(итог.get("ожидание") or 0, 1), длительность_с=round(всего, 1),
+                       правок=вывод.правок, отказов_telegram=вывод.отказов_telegram,
+                       скрыто=sum(скрыто.values()), виды_пд=sorted(скрыто), **учёт)
+
     # --- опрос (D-T03) --------------------------------------------------------------------
 
     def _состояние_offset(self) -> tuple[int | None, int | None]:
@@ -1031,7 +1084,7 @@ class Бот:
         if (not isinstance(чат, dict) or чат.get("type") != "private" or not isinstance(от, dict) or
                 self.владелец is None or от.get("id") != self.владелец or not isinstance(текст, str)):
             return False
-        return текст.partition(" ")[0].split("@")[0].lower() in СРАЗУ
+        return мгновенная_команда(текст)
 
     async def _с_боковым_опросом(self, номер: int, работа: Awaitable[None]) -> None:
         """Выполнить update; пока он идёт, раз в опрос_во_время_с отвечать на мгновенные команды.
@@ -1196,6 +1249,61 @@ def _собрать_документы(д: dict, ожидание: float, все
         части.append("⚠ Список фамилий не найден — фамилии не проверялись.")
     итог = "\n\n".join(ч for ч in части if ч)
     if pd.найти(итог) or _остатки_пд(итог):
+        raise ValueError("контрольная проверка нашла признаки ПД")
+    return итог, dict(скрыто)
+
+
+def собрать_проект(д: dict, ожидание: float, всего: float) -> tuple[str, dict[str, int]]:
+    """Ответ ассистента разработчика для Telegram (День 31, FR-13): каждая часть — под маской ПД
+    ТОЧНОГО профиля (plan D-02a: полный профиль портит ORM, MVP, IP), затем контрольная проверка
+    тем же профилем. Любая ошибка — отказ, исходный текст в Telegram не уходит."""
+    try:
+        return _собрать_проект(д, ожидание, всего)
+    except Exception:  # noqa: BLE001
+        return ОТКАЗ_ПД, {}
+
+
+def _собрать_проект(д: dict, ожидание: float, всего: float) -> tuple[str, dict[str, int]]:
+    if not isinstance(д, dict):
+        raise TypeError("ответ ассистента должен быть объектом")
+    скрыто: Counter = Counter()
+
+    def маска(значение: Any) -> str:
+        if значение is None:
+            return ""
+        if not isinstance(значение, (str, int, float, bool)):
+            raise TypeError("поле ответа ассистента должно быть скаляром")
+        чисто, виды = pd.скрыть(str(значение), профиль="точный")
+        скрыто.update(виды)
+        return чисто
+
+    части = [маска(д.get("answer") or "")]
+    git = д.get("git") or {}
+    if not isinstance(git, dict):
+        raise TypeError("git должен быть объектом")
+    if git.get("branch"):
+        части.append(маска(f"git: ветка {git.get('branch')} @ {git.get('commit')}"
+                           + (" · рабочий каталог чист" if git.get("clean") else f" · изменено {git.get('changed')}")))
+    источники = д.get("sources") or []
+    if not isinstance(источники, list):
+        raise TypeError("sources должен быть списком")
+    if источники:
+        части.append("Источники:\n" + "\n".join(
+            маска(f"[{и.get('n')}] {и.get('source')}" + (f" · {и.get('section')}" if и.get("section") else ""))
+            for и in источники if isinstance(и, dict)))
+    вызовы = [в for в in (д.get("tool_calls") or [])[2:] if isinstance(в, dict)]
+    if вызовы:
+        части.append("Вызовы git (только чтение):\n" + "\n".join(
+            маска(f"{'✓' if в.get('ok') else '✗'} {str(в.get('name', '')).split('__')[-1]}"
+                  f"({', '.join(f'{к}={з}' for к, з in (в.get('args') or {}).items())}) → {в.get('summary', '')}")
+            for в in вызовы))
+    for пометка in д.get("notes") or []:
+        части.append("⚠ " + маска(пометка))
+    usage = д.get("usage") or {}
+    части.append(f"— {маска(д.get('model') or '')} · вход {usage.get('prompt_tokens') or 0} · ответ "
+                 f"{usage.get('completion_tokens') or 0} ток. · очередь {ожидание:.1f} с · всего {всего:.1f} с")
+    итог = "\n\n".join(ч for ч in части if ч)
+    if pd.скрыть(итог, профиль="точный")[1]:
         raise ValueError("контрольная проверка нашла признаки ПД")
     return итог, dict(скрыто)
 

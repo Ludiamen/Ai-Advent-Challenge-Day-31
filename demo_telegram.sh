@@ -17,7 +17,7 @@
 #
 # Запуск:
 #   bash demo_telegram.sh --вход        # один раз: открыть Telegram Web для входа по QR
-#   bash demo_telegram.sh               # Chrome + запись + показ (службы day30-llm и day30-tg работают)
+#   bash demo_telegram.sh               # Chrome + запись + показ (службы day31-llm и day31-tg работают)
 #   bash demo_telegram.sh --no-record   # без записи
 #   bash demo_telegram.sh --pause 4000  # длиннее паузы между сценами
 set -u
@@ -88,8 +88,8 @@ trap cleanup EXIT INT TERM
 
 echo "1/5 Службы, бот и ключ показа…"
 "$PY" "$ROOT/cli.py" --сервис статус | grep -q "active (running)" || {
-  echo "Служба day30-llm не работает: python cli.py --сервис старт"; exit 1; }
-"$PY" "$ROOT/cli.py" --телеграм статус | grep -q "Служба day30-tg: active (running)" || {
+  echo "Служба day31-llm не работает: python cli.py --сервис старт"; exit 1; }
+"$PY" "$ROOT/cli.py" --телеграм статус | grep -q "Служба day31-tg: active (running)" || {
   echo "Бот не работает: python cli.py --телеграм старт"; exit 1; }
 BOT="$("$PY" - <<'PYCODE'
 import sys, httpx

@@ -14935,16 +14935,16 @@ class БотTelegram(unittest.IsolatedAsyncioTestCase):
 
 
 class СлужбаБота(_ОсноваШлюза):
-    """Служба day30-tg, ключ бота, состояние для /admin, консоль и ручка /admin/api/telegram."""
+    """Служба day31-tg, ключ бота, состояние для /admin, консоль и ручка /admin/api/telegram."""
 
     def test_unit_файл_бота(self):
         т = svc_unit.текст_бота("/py", "/корень", "/память")
         for кусок in ("ExecStart=/py /корень/telegram_bot.py", "Environment=MEMORY_DIR=/память",
-                      "After=network-online.target day30-llm.service", "Restart=on-failure",
+                      "After=network-online.target day31-llm.service", "Restart=on-failure",
                       "RestartPreventExitStatus=2 3"):
             self.assertIn(кусок, т)
         self.assertNotIn("TELEGRAM", т, "секреты — в .env, не в unit-файле")
-        self.assertTrue(svc_unit.путь_unit(svc_unit.ИМЯ_БОТА).endswith("systemd/user/day30-tg.service"))
+        self.assertTrue(svc_unit.путь_unit(svc_unit.ИМЯ_БОТА).endswith("systemd/user/day31-tg.service"))
         self.assertIn("service.py", svc_unit.текст("/py", "/корень", "/память"), "служба сервиса — как была")
 
     def test_ключ_бота_файл_0600_и_старый_отозван(self):
@@ -14958,7 +14958,7 @@ class СлужбаБота(_ОсноваШлюза):
             ключ2 = pathlib.Path(путь).read_text().strip()
             хранилище = manage.хранилище_ключей()
             self.assertIsNone(хранилище.проверить(ключ1), "старый ключ бота отозван")
-            self.assertEqual(хранилище.проверить(ключ2)["права"], ["чат", "документы"])
+            self.assertEqual(хранилище.проверить(ключ2)["права"], ["чат", "документы", "проект"])   # День 31: + «проект»
         self.assertEqual((первый["имя"], второй["файл"]), ("телеграм", путь))
         self.assertNotIn("sk-day30-", _json.dumps(второй), "сам ключ наружу не отдаётся")
 
@@ -15006,7 +15006,7 @@ class СлужбаБота(_ОсноваШлюза):
         self.assertNotIn("sk-day30-", r.stdout + r.stderr)
         r = запуск("--телеграм", "статус")
         вывод = r.stdout + r.stderr
-        self.assertIn("Служба day30-tg", вывод)
+        self.assertIn("Служба day31-tg", вывод)
         self.assertIn("владелец: задан", вывод)
         for секрет in ("PROBE", "424242"):
             self.assertNotIn(секрет, вывод)

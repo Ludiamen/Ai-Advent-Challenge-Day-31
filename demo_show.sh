@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Показ Дня 30 одной командой: живая служба day30-llm, видимый Chrome, запись окна
+# Показ Дня 30 одной командой: живая служба day31-llm, видимый Chrome, запись окна
 # и восемь сцен сценария DEMO-CHROME.md. После записи — ускоренная копия:
 # ожидание локальной модели ×8 с надписью в кадре (demo_speedup.py), сцены и
 # ответы — в обычной скорости. Основная запись — без монтажа.
@@ -57,7 +57,7 @@ trap cleanup EXIT INT TERM
 
 echo "1/5 Служба и ключи показа…"
 "$PY" "$ROOT/cli.py" --сервис статус | grep -q "active (running)" || {
-  echo "Служба day30-llm не работает: python cli.py --сервис старт"; exit 1; }
+  echo "Служба day31-llm не работает: python cli.py --сервис старт"; exit 1; }
 ADDR="$("$PY" -c 'import sys; sys.path.insert(0, "'"$ROOT"'"); from agent.service import certs; print(certs.адрес_в_сети())')"
 PORT="$("$PY" -c 'import json; print(json.load(open("'"$ROOT"'/service.json"))["порт"])')"
 URL="https://$ADDR:$PORT"
@@ -140,4 +140,4 @@ else
 fi
 
 echo
-echo "Показ окончен (код водителя $SHOW_CODE). Ключи показа отозваны; служба day30-llm работает дальше."
+echo "Показ окончен (код водителя $SHOW_CODE). Ключи показа отозваны; служба day31-llm работает дальше."

@@ -10,7 +10,7 @@ TELEGRAM_OWNER_ID (единственный, кому бот отвечает).
 адрес Bot API (OFFLINE_ALLOW_EXTERNAL); токен не печатается и не пишется в журналы
 (логгеры httpx — WARNING: на INFO они печатают URL, а в нём токен).
 
-    python telegram_bot.py                       # служба day30-tg запускает именно так
+    python telegram_bot.py                       # служба day31-tg запускает именно так
     python telegram_bot.py --память DIR --api http://127.0.0.1:PORT   # проверка: свой каталог, подменный Bot API
 
 Коды выхода: 0 — остановлен сигналом; 2 — нет токена, ключа или токен не принят;

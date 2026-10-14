@@ -445,6 +445,12 @@ def проверить_модель(ключ: str) -> None:
     модель = catalog.get(ключ)
     if модель.local:
         return
+    # День 31: процессу явно разрешён внешний хост этой модели (OFFLINE_ALLOW_EXTERNAL — сервис
+    # пускает только api.deepseek.com для ручки проекта). Сам запрос пройдёт сетевой фильтр и
+    # будет виден в журнале как внешний.
+    хост = (urlparse(модель.base_url).hostname or "").lower()
+    if хост and хост in _разрешённые_внешние():
+        return
     _записать("POST", urlparse(модель.base_url).hostname or модель.provider,
               "/chat/completions", "заблокирован до сокета", ключ)
     from agent.llm import LLMError

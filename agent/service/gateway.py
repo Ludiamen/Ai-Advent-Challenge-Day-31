@@ -37,6 +37,7 @@ from agent.service.tokens import Токенизатор
 РОЛИ = ("system", "user", "assistant")
 СООБЩЕНИЕ_OLLAMA_НЕДОСТУПНА = "Локальная модель временно недоступна."
 СООБЩЕНИЕ_ДОКУМЕНТЫ_НЕДОСТУПНЫ = "Ответ по документам временно недоступен."
+СООБЩЕНИЕ_ПРОЕКТ_НЕДОСТУПЕН = "Ассистент проекта временно недоступен."
 СООБЩЕНИЕ_TELEGRAM_НЕДОСТУПЕН = "Операция Telegram временно недоступна."
 
 
@@ -141,7 +142,9 @@ class Сервис:
                  состояние: Callable[[], dict[str, Any]] | None = None,
                  шаг: Callable[[str, str], dict[str, Any]] | None = None,
                  нагрузка: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-                 телеграм: Callable[[str], dict[str, Any]] | None = None) -> None:
+                 телеграм: Callable[[str], dict[str, Any]] | None = None,
+                 помощник: Callable[[str], dict[str, Any]] | None = None,
+                 режим_проекта: Callable[[str | None], dict[str, Any]] | None = None) -> None:
         self.настройки = настройки
         self.ключи = ключи
         self.журнал = журнал
@@ -152,6 +155,8 @@ class Сервис:
         self.ведро = Ведро(л.запросов_в_минуту)
         self.очередь = Очередь(л.очередь)
         self.отвечатель = отвечатель
+        self.помощник = помощник          # ассистент разработчика: /v1/project/help (День 31)
+        self.режим_проекта = режим_проекта  # None — прочитать; «облако» / «локально» — задать
         self.телеграм = телеграм          # служба Telegram-бота: старт / стоп / перезапуск (telegram-plan D-T12)
         self.доп_состояние = состояние
         self.шаг = шаг
@@ -465,9 +470,14 @@ def создать_приложение(с: Сервис) -> FastAPI:
             с.журнал.записать(**запись, код=код, ошибка=ошибка_кода, ожидание_с=round(ожидание, 2),
                               длительность_с=round(time.monotonic() - начало, 2), ответ=выход, причина=причина)
 
-    @app.post("/v1/documents/answer")
-    async def документы(request: Request):
-        запись = с.ключ(request, "документы")
+    async def вопрос_в_очередь(request: Request, право: str, отвечатель: Callable[[str], dict[str, Any]] | None,
+                               выключено: tuple[str, str], сбой: tuple[str, str], что: str, объект: str,
+                               модель: Callable[[dict[str, Any]], str]):
+        """Вопрос → синхронный отвечатель в отдельном потоке через общую очередь шлюза.
+
+        Один путь у ответа по документам (День 30) и у ассистента проекта (День 31): ключ с
+        правом, лимит, предел тела и вопроса, очередь, обрыв клиента, таймаут, журнал без текстов."""
+        запись = с.ключ(request, право)
         if isinstance(запись, JSONResponse):
             return запись
         if (отказ := с.лимит(request, запись)) is not None:
@@ -484,8 +494,8 @@ def создать_приложение(с: Сервис) -> FastAPI:
             request.state.журнал["ошибка"] = "question_too_long"
             return ошибка(413, f"Вопрос {len(вопрос)} символов больше предела {л.вопрос_символов}.",
                           "invalid_request_error", "question_too_long")
-        if с.отвечатель is None:
-            return ошибка(503, "Ответ по документам на этом сервере выключен.", "server_error", "documents_disabled")
+        if отвечатель is None:
+            return ошибка(503, выключено[0], "server_error", выключено[1])
         позиция = с.очередь.позиция()
         try:
             заявка = с.очередь.записаться()
@@ -497,10 +507,10 @@ def создать_приложение(с: Сервис) -> FastAPI:
         except КлиентУшёл:
             request.state.журнал["ошибка"] = "client_gone"
             return Response(status_code=499)
-        # Ответ по документам — синхронный код Дня 29 в отдельном потоке. Поток не прервать:
-        # место в очереди освобождается, когда он закончит, даже если клиент уже ушёл.
+        # Отвечатель — синхронный код в отдельном потоке. Поток не прервать: место в очереди
+        # освобождается, когда он закончит, даже если клиент уже ушёл.
         начало = time.monotonic()
-        задача = asyncio.ensure_future(asyncio.to_thread(с.отвечатель, вопрос))
+        задача = asyncio.ensure_future(asyncio.to_thread(отвечатель, вопрос))
         задача.add_done_callback(lambda _: с.очередь.выйти(time.monotonic() - начало))
         try:
             итог = await с.с_обрывом(request, asyncio.wait_for(asyncio.shield(задача), л.таймаут_с))
@@ -509,15 +519,36 @@ def создать_приложение(с: Сервис) -> FastAPI:
             return Response(status_code=499)
         except asyncio.TimeoutError:
             request.state.журнал["ошибка"] = "timeout"
-            return ошибка(504, f"Ответ по документам дольше {int(л.таймаут_с)} с.", "server_error", "timeout")
+            return ошибка(504, f"{что} дольше {int(л.таймаут_с)} с.", "server_error", "timeout")
         except Exception:  # noqa: BLE001 — ошибка отвечателя: клиенту — безопасный 502, а не обрыв
-            request.state.журнал["ошибка"] = "documents_error"
-            return ошибка(502, СООБЩЕНИЕ_ДОКУМЕНТЫ_НЕДОСТУПНЫ, "server_error", "documents_error")
+            request.state.журнал["ошибка"] = сбой[1]
+            return ошибка(502, сбой[0], "server_error", сбой[1])
         request.state.журнал.update({"ожидание_с": round(ожидание, 2), "очередь": позиция,
                                      "вход": (итог.get("usage") or {}).get("prompt_tokens"),
                                      "ответ": (итог.get("usage") or {}).get("completion_tokens")})
-        return JSONResponse({"object": "documents.answer", "model": с.настройки.модель, **итог},
+        return JSONResponse({**итог, "object": объект, "model": модель(итог)},
                             headers={"X-Queue-Wait": f"{ожидание:.1f}", "X-Queue-Position": str(позиция)})
+
+    @app.post("/v1/documents/answer")
+    async def документы(request: Request):
+        return await вопрос_в_очередь(
+            request, "документы", с.отвечатель, ("Ответ по документам на этом сервере выключен.", "documents_disabled"),
+            (СООБЩЕНИЕ_ДОКУМЕНТЫ_НЕДОСТУПНЫ, "documents_error"), "Ответ по документам", "documents.answer",
+            lambda _: с.настройки.модель)
+
+    @app.post("/v1/project/help")
+    async def проект(request: Request):
+        """Ассистент разработчика (День 31, spec FR-10): ответ о проекте по документации и git."""
+        ответ = await вопрос_в_очередь(
+            request, "проект", с.помощник, ("Ассистент проекта на этом сервере выключен.", "project_disabled"),
+            (СООБЩЕНИЕ_ПРОЕКТ_НЕДОСТУПЕН, "project_error"), "Ответ ассистента проекта", "project.help",
+            lambda итог: str(итог.get("model") or ""))
+        if isinstance(ответ, JSONResponse) and ответ.status_code == 200:
+            try:
+                request.state.журнал["модель"] = json.loads(ответ.body).get("model")
+            except (ValueError, AttributeError):
+                pass
+        return ответ
 
     # --- служебные (ключ «админ») -------------------------------------------------------
 
@@ -533,6 +564,8 @@ def создать_приложение(с: Сервис) -> FastAPI:
                 "clients": с.журнал.клиенты()}
         if с.доп_состояние is not None:
             итог.update(await asyncio.to_thread(с.доп_состояние))
+        if с.режим_проекта is not None:
+            итог["project"] = await asyncio.to_thread(с.режим_проекта, None)
         return итог
 
     @app.post("/admin/api/step")
@@ -574,6 +607,22 @@ def создать_приложение(с: Сервис) -> FastAPI:
             return ошибка(503, "Нагрузка с этой страницы недоступна.", "server_error", "load_disabled")
         итог = await asyncio.to_thread(с.нагрузка, тело)
         return JSONResponse(итог, status_code=409 if итог.get("error") else 200)
+
+    @app.post("/admin/api/project-model")
+    async def модель_проекта(request: Request):
+        """Переключатель модели ассистента проекта: «облако» (ds-flash) или «локально» — без перезапуска."""
+        запись = с.ключ(request, "админ")
+        if isinstance(запись, JSONResponse):
+            return запись
+        тело = await _json_объект(request, л.тело_байт)
+        if isinstance(тело, JSONResponse):
+            return тело
+        режим = тело.get("режим")
+        if режим not in ("облако", "локально"):
+            return ошибка(400, "Режим — облако или локально.", "invalid_request_error", "bad_mode")
+        if с.режим_проекта is None:
+            return ошибка(503, "Ассистент проекта на этом сервере выключен.", "server_error", "project_disabled")
+        return JSONResponse(await asyncio.to_thread(с.режим_проекта, режим))
 
     @app.post("/admin/api/telegram")
     async def телеграм(request: Request):

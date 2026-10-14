@@ -631,6 +631,209 @@ class КомандаHelp(unittest.TestCase):
         self.assertIn("подсказка-помощи", html)
 
 
+def _ручка_проекта_тесты():
+    """Классы на основе _ОсноваШлюза из tests.py — импорт здесь, чтобы tests.py не грузился зря."""
+    import tests as дн30
+
+    class РучкаПроекта(дн30._ОсноваШлюза):
+        """spec FR-10, FR-11, SC-06; plan D-08: /v1/project/help — тот же путь, что документы."""
+
+        def setUp(self):
+            super().setUp()
+            from fastapi.testclient import TestClient
+            from agent.service import gateway
+            self.к_проект = self.ключи.создать("проект", ["проект"])
+            self.вопросы, self.режим = [], {"режим": "облако", "модель": "ds-flash"}
+            self.сервис.помощник = self._помочь
+            self.сервис.режим_проекта = self._режим
+            self.клиент = TestClient(gateway.создать_приложение(self.сервис), base_url="https://testserver",
+                                     client=("192.168.1.31", 50000))
+
+        def _помочь(self, вопрос):
+            self.вопросы.append(вопрос)
+            if вопрос == "сломайся":
+                raise RuntimeError("секретный текст ошибки")
+            return {"object": "project.help", "model": self.режим["модель"], "answer": "Стек — Django 5.",
+                    "sources": [{"n": 1, "source": "README.md"}], "usage": {"prompt_tokens": 900, "completion_tokens": 40}}
+
+        def _режим(self, значение):
+            if значение:
+                self.режим = {"режим": значение, "модель": "ds-flash" if значение == "облако" else "loc-rag-docs"}
+            return dict(self.режим)
+
+        def спросить(self, ключ, вопрос="Какой стек?"):
+            return self.клиент.post("/v1/project/help", headers=self.h(ключ), json={"question": вопрос})
+
+        def test_права_и_ответ(self):
+            self.assertEqual(self.клиент.post("/v1/project/help", json={"question": "x"}).status_code, 401)
+            r = self.спросить(self.к_док)
+            self.assertEqual((r.status_code, r.json()["error"]["code"]), (403, "permission_denied"))
+            r = self.спросить(self.к_проект)
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual((r.json()["object"], r.json()["model"], r.json()["answer"]),
+                             ("project.help", "ds-flash", "Стек — Django 5."))
+            self.assertEqual(self.вопросы, ["Какой стек?"])
+            self.assertEqual(self.сервис.очередь.состояние()["идёт"], 0)
+
+        def test_ошибки_и_журнал_без_текстов(self):
+            r = self.спросить(self.к_проект, "сломайся")
+            self.assertEqual((r.status_code, r.json()["error"]["code"]), (502, "project_error"))
+            self.assertNotIn("секретный", r.text)
+            r = self.спросить(self.к_проект, "x" * 5000)
+            self.assertEqual((r.status_code, r.json()["error"]["code"]), (413, "question_too_long"))
+            self.спросить(self.к_проект, "Какой стек у секретного проекта?")
+            with open(self.журнал_путь, encoding="utf-8") as f:
+                журнал = f.read()
+            self.assertNotIn("секрет", журнал)
+            self.assertIn('"ручка": "/v1/project/help"', журнал)
+            self.assertIn('"модель": "ds-flash"', журнал)
+
+        def test_лимит_ключа(self):
+            коды = [self.спросить(self.к_проект).status_code for _ in range(7)]
+            self.assertEqual(коды[-1], 429)
+
+        def test_переключатель_админа(self):
+            r = self.клиент.post("/admin/api/project-model", headers=self.h(self.к_проект), json={"режим": "локально"})
+            self.assertEqual(r.status_code, 403)
+            r = self.клиент.post("/admin/api/project-model", headers=self.h(self.к_админ), json={"режим": "всё"})
+            self.assertEqual(r.status_code, 400)
+            r = self.клиент.post("/admin/api/project-model", headers=self.h(self.к_админ), json={"режим": "локально"})
+            self.assertEqual(r.json()["модель"], "loc-rag-docs")
+            self.assertEqual(self.спросить(self.к_проект).json()["model"], "loc-rag-docs")
+            состояние = self.клиент.get("/admin/api/state", headers=self.h(self.к_админ)).json()
+            self.assertEqual(состояние["project"]["режим"], "локально")
+
+    return РучкаПроекта
+
+
+РучкаПроекта = _ручка_проекта_тесты()
+
+
+def _бот_тесты():
+    import tests as дн30
+    from agent.service import telegram as tg
+
+    class БотHelp(unittest.IsolatedAsyncioTestCase):
+        """spec FR-13; plan D-10: «/help» без текста — мгновенная справка, «/help вопрос» — ручка проекта.
+
+        Помощники — из БотTelegram Дня 30 (без наследования: его тесты не прогоняются дважды)."""
+
+        ВЛАДЕЛЕЦ = дн30.БотTelegram.ВЛАДЕЛЕЦ
+        бот, обн, прогон, журнал = (дн30.БотTelegram.бот, дн30.БотTelegram.обн, дн30.БотTelegram.прогон,
+                                    дн30.БотTelegram.журнал)
+
+        def setUp(self):
+            дн30.БотTelegram.setUp(self)
+            self.names = os.path.join(self.каталог, "pd-names.txt")
+            with open(self.names, "w", encoding="utf-8") as f:
+                f.write("Заглушкин\n")
+            окружение = mock.patch.dict(os.environ, {"PD_NAMES": self.names})
+            окружение.start()
+            self.addCleanup(окружение.stop)
+
+        def ответ_проекта(self, текст="Стек — Django 5; выражения ORM, автор Заглушкин."):
+            return (200, {"x-queue-wait": "1.5"}, {
+                "object": "project.help", "model": "ds-flash", "answer": текст,
+                "git": {"branch": "main", "commit": "abc1234", "clean": True, "changed": 0},
+                "sources": [{"n": 1, "source": "README.md", "section": "Стек"}],
+                "tool_calls": [{"name": "git__git_branch"}, {"name": "git__git_status"},
+                               {"name": "git__git_log", "args": {"count": 3}, "ok": True, "summary": "коммитов 3"}],
+                "notes": [], "usage": {"prompt_tokens": 900, "completion_tokens": 40}})
+
+        def test_мгновенность(self):
+            self.assertTrue(tg.мгновенная_команда("/help"))
+            self.assertTrue(tg.мгновенная_команда("/help@AIChBot"))
+            self.assertFalse(tg.мгновенная_команда("/help Какой стек?"))
+            self.assertFalse(tg.мгновенная_команда("/help@AIChBot Какой стек?"))
+            self.assertTrue(tg.мгновенная_команда("/status"))
+
+        async def test_справка_упоминает_help_вопрос(self):
+            await self.прогон(self.бот(), "/help")
+            self.assertIn("/help вопрос", self.tg.тексты("sendMessage")[-1])
+            self.assertEqual([п for п, _ in self.сервис.запросы], [])
+
+        async def test_вопрос_уходит_в_ручку_проекта_под_точной_маской(self):
+            self.сервис.документы.append(self.ответ_проекта())
+            await self.прогон(self.бот(), "/help Какой стек?")
+            self.assertEqual(self.сервис.запросы[-1], ("/v1/project/help", {"question": "Какой стек?"}))
+            итог = self.tg.тексты("editMessageText")[-1]
+            self.assertIn("Django 5", итог)
+            self.assertIn("ORM", итог)                      # точный профиль не портит латиницу
+            self.assertNotIn("Заглушкин", итог)
+            self.assertIn("ветка main", итог)
+            self.assertIn("git_log(count=3)", итог)
+            запись = [з for з in self.журнал() if з.get("вид") == "проект"][-1]
+            self.assertEqual((запись["код"], запись["скрыто"]), (200, 1))
+            self.assertNotIn("Django", str(self.журнал()))   # журнал бота без текстов
+
+        async def test_без_права_проект_понятный_отказ(self):
+            self.сервис.документы.append(дн30._отказ(403, "permission_denied"))
+            await self.прогон(self.бот(), "/help Какой стек?")
+            итог = self.tg.тексты("editMessageText")[-1]
+            self.assertIn("нет права", итог)
+            self.assertIn("--телеграм-ключ", итог)
+
+        def test_сборка_отказывает_на_мусоре(self):
+            self.assertEqual(tg.собрать_проект({"answer": {"не": "строка"}}, 0, 0)[0], tg.ОТКАЗ_ПД)
+
+    return БотHelp
+
+
+БотHelp = _бот_тесты()
+
+
+class ПереключательИПредохранитель(unittest.TestCase):
+    """spec FR-11, NFR-03; plan D-08: модель проекта без перезапуска; облако — только разрешённый хост."""
+
+    def test_модель_проекта_по_переключателю(self):
+        from agent.service import config
+        with tempfile.TemporaryDirectory() as к, mock.patch.dict(os.environ, {"MEMORY_DIR": к}):
+            н = config.загрузить()
+            self.assertEqual((н.проект.модель, н.проект.запасная, н.проект.облачный_хост),
+                             ("ds-flash", "loc-rag-docs", "api.deepseek.com"))
+            self.assertEqual(config.модель_проекта(н), "ds-flash")
+            self.assertEqual(config.задать_модель_проекта(н, "локально")["модель"], "loc-rag-docs")
+            self.assertEqual(config.режим_проекта(н)["режим"], "локально")
+            config.задать_модель_проекта(н, "облако")
+            self.assertEqual(config.модель_проекта(н), "ds-flash")
+            with self.assertRaises(ValueError):
+                config.задать_модель_проекта(н, "любая")
+
+    def test_облачная_модель_только_с_разрешённым_хостом(self):
+        from agent.llm import LLMError
+        from agent.local import offline
+        прежний = offline.включён()
+        try:
+            offline.включить(True, "тест")
+            with mock.patch.dict(os.environ, {"OFFLINE_ALLOW_EXTERNAL": ""}):
+                with self.assertRaises(LLMError):
+                    offline.проверить_модель("ds-flash")
+            with mock.patch.dict(os.environ, {"OFFLINE_ALLOW_EXTERNAL": "api.deepseek.com"}):
+                offline.проверить_модель("ds-flash")              # пропущена
+                with self.assertRaises(LLMError):
+                    offline.проверить_модель("groq-120b")          # другой облачный хост — отказ
+        finally:
+            offline.включить(прежний, "тест")
+
+    def test_право_проект_в_ключах(self):
+        from agent.service import keys
+        self.assertIn("проект", keys.ПРАВА)
+
+
+class СлужбыДня31(unittest.TestCase):
+    """spec FR-15, plan D-11: службы day31-* вместо day30-*; бот запускается после сервиса."""
+
+    def test_имена_и_порядок(self):
+        from agent.service import manage, unit
+        self.assertEqual((unit.ИМЯ, unit.ИМЯ_БОТА), ("day31-llm.service", "day31-tg.service"))
+        with tempfile.TemporaryDirectory() as к:
+            текст = unit.текст_бота(os.path.join(к, "python"), к, os.path.join(к, "memory"))
+        self.assertIn("After=network-online.target day31-llm.service", текст)
+        self.assertIn("День 31", текст)
+        self.assertNotIn("day30", текст)
+        self.assertEqual(manage.ПРАВА_БОТА, ("чат", "документы", "проект"))
+
+
 class МетрикиАссистента(unittest.TestCase):
     def test_сводка_и_белый_список(self) -> None:
         from agent.devassist import metrics

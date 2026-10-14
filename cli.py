@@ -916,7 +916,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     срв = parser.add_argument_group("приватный AI-сервис (День 30)")
     срв.add_argument("--сервис", dest="svc", default="", choices=("установить", "старт", "стоп", "перезапуск", "статус"),
-                     help="служба пользователя systemd «day30-llm»: шлюз перед Ollama по HTTPS (service.py)")
+                     help="служба пользователя systemd «day31-llm»: шлюз перед Ollama по HTTPS (service.py)")
     срв.add_argument("--сервис-сертификат", dest="svc_cert", action="store_true",
                      help="свой центр сертификации (один раз) и сертификат сервера на адреса из service.json и "
                           "текущий адрес в домашней сети; после смены адреса — выпустить заново и перезапустить")
@@ -939,7 +939,7 @@ def build_parser() -> argparse.ArgumentParser:
     срв.add_argument("--сервис-адрес", dest="svc_addr", default="", metavar="URL",
                      help="адрес сервиса для нагрузки (по умолчанию https://<адрес в домашней сети>:<порт>)")
     срв.add_argument("--телеграм", dest="tg", default="", choices=("установить", "старт", "стоп", "перезапуск", "статус"),
-                     help="служба пользователя systemd «day30-tg»: Telegram-бот — чат владельца с моделью через "
+                     help="служба пользователя systemd «day31-tg»: Telegram-бот — чат владельца с моделью через "
                           "сервис (telegram_bot.py; токен и ID владельца — в .env)")
     срв.add_argument("--телеграм-ключ", dest="tg_key", action="store_true",
                      help="ключ сервиса для бота («телеграм»: чат, документы) — в memory/service/telegram.key (0600); "
@@ -954,6 +954,10 @@ def build_parser() -> argparse.ArgumentParser:
     пом.add_argument("--проект-индекс", dest="project_index", action="store_true",
                      help="собрать индекс документов проекта: README, docs/, specs/, models.py, urls.py — "
                           "только файлы под git, после маски ПД; векторы — из кэша, где есть")
+    пом.add_argument("--сервис-проект-модель", dest="svc_project_model", choices=["облако", "локально"],
+                     metavar="облако|локально",
+                     help="модель ручки /v1/project/help приватного сервиса: облако — ds-flash (единственный "
+                          "внешний хост api.deepseek.com), локально — loc-rag-docs; без перезапуска службы")
     пом.add_argument("--помощь-метрики", dest="help_metrics", nargs="?", const="", default=None, metavar="ЖУРНАЛ",
                      help="метрики ответов /help без текстов: число, доля «не знаю» и запасного пути, p50/p95 "
                           "времени, токены — по моделям и каналам (журнал по умолчанию — memory/devassist/metrics.jsonl)")
@@ -4268,10 +4272,16 @@ def отчёт_оптимизации_cli(agent: MemoryAgent, аргументы
 def сервис_cli(аргументы) -> int | None:
     """День 30: служба, сертификат, ключи, нагрузка — те же функции, что у страницы /admin."""
     if not (аргументы.svc or аргументы.svc_cert or аргументы.svc_key or аргументы.svc_keys or аргументы.svc_revoke
-            or аргументы.svc_load or аргументы.tg or аргументы.tg_key or аргументы.tg_who):
+            or аргументы.svc_load or аргументы.tg or аргументы.tg_key or аргументы.tg_who
+            or getattr(аргументы, "svc_project_model", None)):
         return None
     from agent.service import config, keys, manage
     try:
+        if getattr(аргументы, "svc_project_model", None):
+            н = config.загрузить()
+            итог = config.задать_модель_проекта(н, аргументы.svc_project_model)
+            print(f"Ассистент проекта (/v1/project/help): режим «{итог['режим']}», модель {итог['модель']}. "
+                  "Работающий сервис читает переключатель на каждом запросе — перезапуск не нужен.")
         if аргументы.svc_cert:
             итог = manage.сертификат()
             print(f"Сертификат сервера: {итог['crt']}\nЦентр (раздать клиентам): {итог['ca']}\n"
@@ -4294,7 +4304,7 @@ def сервис_cli(аргументы) -> int | None:
             итог = manage.служба(аргументы.svc)
             if аргументы.svc == "установить":
                 print(f"Служба записана: {итог['unit']}")
-            print(f"Служба day30-llm: {итог['состояние'] or 'нет'} ({итог['подсостояние'] or '—'}) · PID {итог['pid']} · "
+            print(f"Служба day31-llm: {итог['состояние'] or 'нет'} ({итог['подсостояние'] or '—'}) · PID {итог['pid']} · "
                   f"перезапусков {итог['перезапусков']}" + (f" · с {итог['с']}" if итог.get("с") else ""))
             if итог["состояние"] == "active":
                 import httpx
@@ -4341,7 +4351,7 @@ def сервис_cli(аргументы) -> int | None:
 def напечатать_бота(служба: dict) -> None:
     from agent.service import manage
     с = manage.состояние_бота(5)
-    print(f"Служба day30-tg: {служба['состояние'] or 'нет'} ({служба['подсостояние'] or '—'}) · PID {служба['pid']} · "
+    print(f"Служба day31-tg: {служба['состояние'] or 'нет'} ({служба['подсостояние'] or '—'}) · PID {служба['pid']} · "
           f"перезапусков {служба['перезапусков']}" + (f" · с {служба['с']}" if служба.get("с") else ""))
     print(f"  токен: {'задан' if с['токен_задан'] else 'НЕТ — TELEGRAM_BOT_TOKEN в .env'} · владелец: "
           f"{'задан' if с['владелец_задан'] else 'НЕ задан — TELEGRAM_OWNER_ID в .env (--телеграм-кто)'} · ключ сервиса: "

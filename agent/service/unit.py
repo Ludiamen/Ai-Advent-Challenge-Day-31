@@ -1,7 +1,7 @@
 """Службы systemd пользователя Дня 30: сервис (spec FR-15, plan D-14) и Telegram-бот
 (telegram-spec FR-T13, telegram-plan D-T01).
 
-Без sudo: `~/.config/systemd/user/day30-llm.service` и `day30-tg.service`,
+Без sudo: `~/.config/systemd/user/day31-llm.service` и `day31-tg.service`,
 `Restart=on-failure`. Без linger службы живут, пока владелец в системе (ворота 0, A-6).
 
   текст(python, корень, память) / текст_бота(...) -> содержимое unit-файла
@@ -14,8 +14,8 @@ import os
 import subprocess
 from typing import Any
 
-ИМЯ = "day30-llm.service"
-ИМЯ_БОТА = "day30-tg.service"
+ИМЯ = "day31-llm.service"
+ИМЯ_БОТА = "day31-tg.service"
 
 
 def путь_unit(имя: str = ИМЯ) -> str:
@@ -25,7 +25,7 @@ def путь_unit(имя: str = ИМЯ) -> str:
 def текст(python: str, корень: str, память: str) -> str:
     return (
         "[Unit]\n"
-        "Description=День 30: приватный AI-сервис (шлюз перед Ollama, loc-rag-docs)\n"
+        "Description=День 31: приватный AI-сервис (шлюз перед Ollama, loc-rag-docs; ассистент проекта)\n"
         "After=network-online.target\n\n"
         "[Service]\n"
         f"WorkingDirectory={корень}\n"
@@ -44,8 +44,8 @@ def текст_бота(python: str, корень: str, память: str) -> st
     повтор их не исправит. Сеть Telegram недоступна — бот ждёт сам, не падая (ворота 0, A-T6)."""
     return (
         "[Unit]\n"
-        "Description=День 30: Telegram-бот (чат владельца с loc-rag-docs через приватный сервис)\n"
-        "After=network-online.target day30-llm.service\n"
+        "Description=День 31: Telegram-бот (чат владельца с loc-rag-docs и /help о проекте через приватный сервис)\n"
+        f"After=network-online.target {ИМЯ}\n"
         "Wants=network-online.target\n\n"
         "[Service]\n"
         f"WorkingDirectory={корень}\n"
