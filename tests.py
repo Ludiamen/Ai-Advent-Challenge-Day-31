@@ -8395,7 +8395,8 @@ class ПоказВБраузере(unittest.TestCase):
             self.assertNotIn("set -u", справка.stdout, f"справка {имя} задевает код")
         self.assertIn("PORT=5001", self.стенд)              # 5000 — сервер человека
         self.assertIn("DEMO_KEY", self.стенд)
-        self.assertIn("record_demo.sh\" --name показ --pid", self.показать)
+        # День 31: показ пишется кадрами самого Chrome (CDP screencast) — чужое окно не попадёт.
+        self.assertIn('RECORD_CDP="$FILE"', self.показать)
         # Ключи вводятся в поля-пароли: окно «Сохранить пароль?» закрывало /admin в кадре.
         self.assertIn('"credentials_enable_service": false', self.показать)
 
@@ -15021,7 +15022,8 @@ class ПоказTelegram(unittest.TestCase):
         корень = os.path.dirname(os.path.abspath(__file__))
         читать = lambda *ч: pathlib.Path(корень, *ч).read_text(encoding="utf-8")
         водитель = читать("browser.mjs")
-        cls.блок = водитель.split("if (РЕЖИМ === 'телеграм')")[1].split("if (РЕЖИМ === 'показ')")[0]
+        # День 31: тот же блок водит и показ «телеграм31» (сцены /help).
+        cls.блок = водитель.split("if (РЕЖИМ === 'телеграм'")[1].split("if (РЕЖИМ === 'показ")[0]
         cls.скрипт = читать("demo_telegram.sh")
         cls.сценарий = читать("DEMO-CHROME.md").split("## Дополнение: показ Telegram-бота")[1]
         cls.админ = читать("templates", "service_admin.html")
@@ -15050,13 +15052,14 @@ class ПоказTelegram(unittest.TestCase):
         self.assertEqual(_subprocess.run(["bash", "-n", self.путь_скрипта], capture_output=True).returncode, 0)
         справка = _subprocess.run(["bash", self.путь_скрипта, "--help"], capture_output=True, text=True, timeout=60)
         self.assertIn("Запуск:", справка.stdout)
-        for кусок in ('"credentials_enable_service"', "--window-size=880,980", 'record_demo.sh" --name телеграм --pid',
+        # День 31: запись — кадрами самого Chrome (RECORD_CDP), а не областью экрана.
+        for кусок in ('"credentials_enable_service"', "--window-size=880,980", 'RECORD_CDP="$FILE"',
                       "--сервис-отозвать", "user-data-dir=\"$PROFILE\""):
             self.assertIn(кусок, self.скрипт)
         self.assertNotIn('rm -rf "$PROFILE"', self.скрипт, "профиль с сеансом удаляет владелец, не скрипт")
         self.assertIn("CDP_TIMEOUT=60000", self.скрипт, "подвисшая страница не вешает показ")
         self.assertIn('["exit_type"] = "Normal"', self.скрипт, "нет окна «Восстановить страницы?» поверх чата")
-        self.assertLess(self.скрипт.index('READY="$SCRATCH/ready"'), self.скрипт.index('record_demo.sh" --name телеграм'),
+        self.assertLess(self.блок.index("await списокСкрыт()"), self.блок.index("await начатьЗапись()"),
                         "запись — только после того, как чат открыт и список чатов скрыт")
         водитель = pathlib.Path(os.path.dirname(os.path.abspath(__file__)), "browser.mjs").read_text(encoding="utf-8")
         self.assertIn("process.env.CDP_TIMEOUT", водитель)

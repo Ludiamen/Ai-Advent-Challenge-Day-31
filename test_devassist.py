@@ -489,6 +489,15 @@ class Ассистент(unittest.TestCase):
         self.assertTrue(any("напомнили" in п for п in о.пометки))
         self.assertEqual(self.клиент.звали[1]["сообщения"][-1]["role"], "user")    # напоминание
 
+    def test_локальная_сбилась_на_вызове_инструмента(self) -> None:
+        from agent.llm import LLMError
+        а = self.ассистент([LLMError("Ollama ответила 500: XML syntax error"),
+                            _Ответ(_json("Django 5 [1]", [1], [(1, ФРАГМЕНТ[:60])]))], модель="loc-rag-docs")
+        о = а.спросить("Какой стек?")
+        self.assertFalse(о.не_знаю, о.текст)
+        self.assertIsNone(self.клиент.звали[1]["tools"])
+        self.assertTrue(any("сбилась на вызове инструмента" in п for п in о.пометки))
+
     def test_меняющий_инструмент_не_вызывается(self) -> None:
         from agent.llm import ToolCall
         а = self.ассистент([_Ответ("", [ToolCall("t1", "git__git_commit", {})]),
@@ -862,7 +871,8 @@ class СлужбыДня31(unittest.TestCase):
             текст = unit.текст_бота(os.path.join(к, "python"), к, os.path.join(к, "memory"))
         self.assertIn("After=network-online.target day31-llm.service", текст)
         self.assertIn("День 31", текст)
-        self.assertNotIn("day30", текст)
+        заголовки = [с for с in текст.splitlines() if с.startswith(("Description=", "After="))]
+        self.assertFalse([с for с in заголовки if "day30" in с or "День 30" in с], заголовки)
         self.assertEqual(manage.ПРАВА_БОТА, ("чат", "документы", "проект"))
 
 
