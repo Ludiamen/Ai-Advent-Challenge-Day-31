@@ -247,7 +247,7 @@ class GitСервер(unittest.TestCase):
 
         инструменты = anyio.run(список)
         self.assertEqual({и.name for и in инструменты},
-                         {"git_branch", "git_status", "git_ls_files", "git_diff", "git_log"})
+                         {"git_branch", "git_status", "git_ls_files", "git_diff", "git_log", "git_show"})
         for и in инструменты:
             with self.subTest(и.name):
                 self.assertTrue(и.annotations.read_only_hint)
@@ -277,8 +277,23 @@ class GitСервер(unittest.TestCase):
         with mock.patch.object(self.м, "ПРЕДЕЛ_DIFF", 10):
             self.assertTrue(self.м.разница()["обрезано"])
 
+    def test_файл_из_коммита(self) -> None:
+        ф = self.м.файл("docs/a.md")
+        self.assertIn("вторая строка", ф["текст"])
+        self.assertNotIn("незакоммиченное", self.м.файл("README.md")["текст"])   # из HEAD, не с диска
+        self.assertNotIn("вторая строка", self.м.файл("docs/a.md", "HEAD~1")["текст"])
+        for плохой, слово in (("docs", "не файл"), ("../x", "вне проекта"), ("*.md", "без шаблонов"),
+                              ("нет.md", "нет")):
+            with self.subTest(плохой):
+                with self.assertRaises(self.м.ОшибкаЗапроса) as о:
+                    self.м.файл(плохой)
+                self.assertIn(слово, str(о.exception))
+        with mock.patch.object(self.м, "ПРЕДЕЛ_ФАЙЛА", 3):
+            self.assertTrue(self.м.файл("docs/a.md")["обрезано"])
+
     def test_ловушки_конфига_не_исполняются(self) -> None:
         self.м.статус(); self.м.разница(); self.м.разница("HEAD~1", "HEAD"); self.м.журнал()
+        self.м.файл("docs/a.md")
         self.assertFalse(os.path.exists(self.метка), "git исполнил программу из локального конфига")
 
     def test_отказы_понятны(self) -> None:
@@ -311,6 +326,327 @@ class GitСервер(unittest.TestCase):
         with mock.patch.dict(os.environ, {"GIT_ROOT": ""}):
             with self.assertRaises(self.м.ОшибкаЗапроса):
                 self.м.ветка()
+
+
+# --- подмены для ассистента ------------------------------------------------------
+
+class _Ответ:
+    def __init__(self, текст: str = "", вызовы=None, вход: int = 100, выход: int = 20) -> None:
+        self.text, self.tool_calls = текст, list(вызовы or [])
+        self.prompt_tokens, self.completion_tokens = вход, выход
+        self.message = {"role": "assistant", "content": текст,
+                        "tool_calls": [{"id": в.ид, "type": "function",
+                                        "function": {"name": в.имя, "arguments": "{}"}} for в in self.tool_calls]}
+
+
+class _Клиент:
+    """Сценарий ответов модели; запоминает, кого и с чем звали."""
+
+    def __init__(self, ответы) -> None:
+        self.ответы, self.звали = list(ответы), []
+
+    def call(self, модель, сообщения, max_tokens=0, temperature=None, tools=None, **_):
+        import copy
+        self.звали.append({"модель": модель, "сообщения": copy.deepcopy(сообщения), "tools": tools})
+        ответ = self.ответы.pop(0)
+        if isinstance(ответ, Exception):
+            raise ответ
+        return ответ
+
+
+class _Git:
+    имя = "подмена"
+
+    def __init__(self, сломан: bool = False, вывод: str = "", данные=None) -> None:
+        self.сломан, self.вывод, self.данные, self.вызовы = сломан, вывод, данные or {}, []
+
+    def инструменты(self):
+        return [{"type": "function", "function": {"name": и, "description": и, "parameters": {"type": "object"}}}
+                for и in ("git__git_ls_files", "git__git_diff", "git__git_log")]
+
+    def вызвать(self, имя, аргументы=None):
+        self.вызовы.append((имя, аргументы or {}))
+        if self.сломан:
+            raise RuntimeError("сервер git не подключился")
+        if имя == "git__git_branch":
+            return True, "{}", {"ветка": "main", "коммит": "abc1234", "отслеживает": "main...origin/main"}
+        if имя == "git__git_status":
+            return True, "{}", {"чисто": True, "изменено": 0}
+        return True, self.вывод, self.данные
+
+
+class _Чанк:
+    def __init__(self, n: int, источник: str, текст: str) -> None:
+        self.текст, self._п = текст, {"source": источник, "section": "Раздел", "chunk_id": f"c{n}"}
+
+    def паспорт(self):
+        return dict(self._п)
+
+
+class _Находка:
+    def __init__(self, n, источник, текст) -> None:
+        self.чанк = _Чанк(n, источник, текст)
+
+
+class _Поисковик:
+    def __init__(self, фрагменты) -> None:
+        self.фрагменты = фрагменты
+        self.индексатор = mock.Mock(найти=mock.Mock(return_value=[]))
+
+    def найти(self, вопрос, настройки):
+        return mock.Mock(фрагменты=list(self.фрагменты))
+
+
+ФРАГМЕНТ = "Стек проекта — Django 5 и HTMX, база PostgreSQL 17, очереди на Redis и RQ."
+
+
+def _json(ответ, источники=(), цитаты=(), не_знаю=False, уточнение=""):
+    import json
+    return json.dumps({"ответ": ответ, "источники": list(источники), "не_знаю": не_знаю, "уточнение": уточнение,
+                       "цитаты": [{"n": n, "текст": т} for n, т in цитаты]}, ensure_ascii=False)
+
+
+class Ассистент(unittest.TestCase):
+    """spec FR-06, FR-12, FR-14; plan D-04, D-07, D-09 — на подменах, без сети и модели."""
+
+    def setUp(self) -> None:
+        from agent.devassist.project import Проект
+        self.tmp = tempfile.TemporaryDirectory()
+        names = os.path.join(self.tmp.name, "pd-names.txt")
+        with open(names, "w", encoding="utf-8") as f:
+            f.write("Заглушкин\n")
+        self.окружение = mock.patch.dict(os.environ, {"PD_NAMES": names})
+        self.окружение.start()
+        self.журнал = os.path.join(self.tmp.name, "metrics.jsonl")
+        self.проект = Проект("t", self.tmp.name, "Тестовый портал", индекс=self.tmp.name)
+        self.паузы = []
+
+    def tearDown(self) -> None:
+        self.окружение.stop()
+        self.tmp.cleanup()
+
+    def ассистент(self, ответы, git=None, фрагменты=None, модель="ds-flash"):
+        from agent.devassist.assistant import Ассистент as А
+
+        class Тестовый(А):
+            def _настройки(self, локально):
+                return None
+        self.клиент = _Клиент(ответы)
+        self.git = git or _Git()
+        поиск = _Поисковик(фрагменты if фрагменты is not None else [_Находка(1, "README.md", ФРАГМЕНТ)])
+        return Тестовый(self.проект, self.клиент, self.git, модель=модель, канал="тест", журнал=self.журнал,
+                        поисковик=поиск, пауза=self.паузы.append)
+
+    def test_ответ_по_документам_ветка_в_промпте_метрики_без_текстов(self) -> None:
+        а = self.ассистент([_Ответ(_json("Django 5 и HTMX [1]", [1], [(1, ФРАГМЕНТ[:60])]))])
+        о = а.спросить("Какой стек у проекта, секретный вопрос?")
+        self.assertFalse(о.не_знаю)
+        self.assertEqual(о.источники[0]["source"], "README.md")
+        self.assertEqual(о.git["branch"], "main")
+        промпт = self.клиент.звали[0]["сообщения"][1]["content"]
+        self.assertIn("ветка: main", промпт)
+        self.assertIn("[1] README.md", промпт)
+        with open(self.журнал, encoding="utf-8") as f:
+            строка = f.read()
+        self.assertNotIn("секретный", строка)
+        self.assertNotIn("Django", строка)
+        self.assertIn('"канал": "тест"', строка)
+
+    def test_круг_инструмента_git_и_ответ_из_git(self) -> None:
+        from agent.llm import ToolCall
+        гит = _Git(вывод="abc1234\t2026-10-14\tпоследняя правка", данные={"коммиты": [{}]})
+        а = self.ассистент([_Ответ("", [ToolCall("t1", "git__git_log", {"count": 1})]),
+                            _Ответ(_json("Последний коммит — «последняя правка» (git)"))], git=гит)
+        о = а.спросить("Что менялось в последнем коммите?")
+        self.assertFalse(о.не_знаю, о.текст)
+        self.assertIn(("git__git_log", {"count": 1}), гит.вызовы)
+        self.assertEqual([в.имя for в in о.вызовы][-1], "git__git_log")
+        второй = self.клиент.звали[1]["сообщения"]
+        self.assertEqual(второй[-1]["role"], "tool")
+        self.assertIn("последняя правка", второй[-1]["content"])
+
+    def test_меняющий_инструмент_не_вызывается(self) -> None:
+        from agent.llm import ToolCall
+        а = self.ассистент([_Ответ("", [ToolCall("t1", "git__git_commit", {})]),
+                            _Ответ(_json("Такого инструмента нет: git только на чтение (git)"))])
+        о = а.спросить("Закоммить изменения")
+        self.assertNotIn("git__git_commit", [и for и, _ in self.git.вызовы])
+        отказ = [в for в in о.вызовы if в.имя == "git__git_commit"][0]
+        self.assertFalse(отказ.ок)
+        self.assertIn("только на чтение", self.клиент.звали[1]["сообщения"][-1]["content"])
+
+    def test_предел_кругов(self) -> None:
+        from agent.devassist.assistant import КРУГОВ
+        from agent.llm import ToolCall
+        просьбы = [_Ответ("", [ToolCall(f"t{i}", "git__git_log", {})]) for i in range(КРУГОВ)]
+        а = self.ассистент(просьбы + [_Ответ(_json("Коммиты есть (git)"))])
+        а.спросить("история?")
+        self.assertEqual(len(self.клиент.звали), КРУГОВ + 1)
+        self.assertIsNone(self.клиент.звали[-1]["tools"])
+
+    def test_не_знаю_без_подтверждения(self) -> None:
+        а = self.ассистент([_Ответ(_json("Есть интеграция с 1С [1]", [1], [(1, "интеграция с 1С:ЗУП включена в MVP")])),
+                            _Ответ(_json("Есть интеграция с 1С [1]", [1], [(1, "интеграция с 1С:ЗУП включена в MVP")]))])
+        о = а.спросить("Есть ли интеграция с 1С:ЗУП?")
+        self.assertTrue(о.не_знаю)
+        self.assertTrue(о.текст.startswith("Не знаю"))
+        self.assertEqual(len(self.клиент.звали), 2)      # один повторный запрос с нарушениями
+
+    def test_запасной_путь_облако_недоступно(self) -> None:
+        from agent.llm import LLMError
+        а = self.ассистент([LLMError("сеть"), LLMError("сеть"),
+                            _Ответ(_json("Django 5 [1]", [1], [(1, ФРАГМЕНТ[:60])]))])
+        о = а.спросить("Какой стек?")
+        self.assertEqual([з["модель"] for з in self.клиент.звали], ["ds-flash", "ds-flash", "loc-rag-docs"])
+        self.assertEqual(self.паузы, [3.0])
+        self.assertIn("ответила локальная модель", о.запасной)
+        self.assertEqual(о.модель, "loc-rag-docs")
+        self.assertFalse(о.не_знаю)
+
+    def test_git_недоступен_ответ_по_документам(self) -> None:
+        а = self.ассистент([_Ответ(_json("Django 5 [1]", [1], [(1, ФРАГМЕНТ[:60])]))], git=_Git(сломан=True))
+        о = а.спросить("Какой стек?")
+        self.assertFalse(о.не_знаю)
+        self.assertTrue(any("git недоступен" in п for п in о.пометки))
+        self.assertIn("недоступно", self.клиент.звали[0]["сообщения"][1]["content"])
+        self.assertIsNone(self.клиент.звали[0]["tools"])
+
+    def test_маска_пд_на_выходе_и_в_выводе_git(self) -> None:
+        from agent.llm import ToolCall
+        гит = _Git(вывод="правку сделал Заглушкин", данные={})
+        а = self.ассистент([_Ответ("", [ToolCall("t1", "git__git_log", {})]),
+                            _Ответ(_json("Правку сделал Заглушкин (git)"))], git=гит)
+        о = а.спросить("кто правил?")
+        self.assertNotIn("Заглушкин", self.клиент.звали[1]["сообщения"][-1]["content"])
+        self.assertNotIn("Заглушкин", о.текст)
+        self.assertIn("фамилия из списка", о.скрыто_пд)
+
+    def test_пустой_вопрос_понятная_ошибка(self) -> None:
+        о = self.ассистент([]).спросить("  ")
+        self.assertIn("пустой вопрос", о.ошибка)
+
+
+class _ПодменаАссистента:
+    """Вместо настоящего ассистента в тестах консоли и веба: без модели, git и индекса."""
+
+    def __init__(self, вопросы: list) -> None:
+        self.вопросы = вопросы
+
+    def спросить(self, вопрос):
+        from agent.devassist.assistant import ВызовGit, ОтветАссистента
+        self.вопросы.append(вопрос)
+        о = ОтветАссистента(вопрос=вопрос, проект="crm", канал="тест", модель="ds-flash",
+                            текст="Стек — Django 5 и HTMX [1].",
+                            источники=[{"n": 1, "source": "README.md", "section": "Стек", "chunk_id": "c1"}],
+                            цитаты=[{"n": 1, "text": "Стек: Django 5 + HTMX", "check": "дословно", "confirmed": True}],
+                            git={"branch": "main", "commit": "abc1234", "clean": True, "changed": 0})
+        о.вызовы = [ВызовGit("git__git_branch"), ВызовGit("git__git_status"),
+                    ВызовGit("git__git_log", {"count": 3}, True, 0.1, "коммитов 3")]
+        о.этапы = {"git": 0.1, "поиск": 0.2, "модель": 1.0, "всего": 1.3}
+        return о
+
+    def закрыть(self) -> None:
+        pass
+
+
+class КомандаHelp(unittest.TestCase):
+    """spec FR-08, FR-09; plan D-06: /help в консольном чате и на странице — один разбор."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import importlib
+        cls.каталог = tempfile.mkdtemp(prefix="help-test-")
+        cls.прежний = os.environ.get("MEMORY_DIR")
+        os.environ["MEMORY_DIR"] = cls.каталог
+        import web as модуль
+        cls.web = importlib.reload(модуль)
+        cls.клиент = cls.web.app.test_client()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        import shutil
+        if cls.прежний is None:
+            os.environ.pop("MEMORY_DIR", None)
+        else:
+            os.environ["MEMORY_DIR"] = cls.прежний
+        shutil.rmtree(cls.каталог, ignore_errors=True)
+
+    def setUp(self) -> None:
+        self.вопросы = []
+        self.подмена = mock.patch("agent.devassist.command.создать",
+                                  side_effect=lambda *a, **k: _ПодменаАссистента(self.вопросы))
+        self.создать = self.подмена.start()
+
+    def tearDown(self) -> None:
+        self.подмена.stop()
+
+    def test_разбор(self) -> None:
+        from agent.devassist import command
+        self.assertEqual(command.разобрать("/help"), ("справка", ""))
+        self.assertEqual(command.разобрать("  /HELP  "), ("справка", ""))
+        self.assertEqual(command.разобрать("/help Где модели?"), ("вопрос", "Где модели?"))
+        self.assertEqual(command.разобрать("/help@AIChBot где\nмодели"), ("вопрос", "где\nмодели"))
+        for не in ("/helper", "help me", "/память", "что такое /help"):
+            self.assertIsNone(command.разобрать(не), не)
+
+    def test_консоль_справка_и_вопрос(self) -> None:
+        import contextlib
+        import io
+        import cli
+        вывод = io.StringIO()
+        with contextlib.redirect_stdout(вывод):
+            код = cli.выполнить(self.web.agent, cli.build_parser().parse_args(
+                ["--чат", "кон", "--реплика", "/help", "--реплика", "/help Какой стек?"]))
+        self.assertEqual(код, 0)
+        текст = вывод.getvalue()
+        self.assertIn("/help вопрос", текст)
+        self.assertIn("Стек — Django 5", текст)
+        self.assertIn("[1] README.md", текст)
+        self.assertIn("git_log(count=3)", текст)
+        self.assertEqual(self.вопросы, ["Какой стек?"])
+        self.assertEqual(self.создать.call_args.args[1], "консоль")
+        история = self.web.agent.чат("кон").история()
+        self.assertEqual([с["content"][:5] for с in история][-2:], ["/help", "Стек "])
+        self.assertEqual(self.web.agent.чат("кон").память.реплик, 0)   # память задачи не тронута
+
+    def test_веб_без_потока_и_с_потоком(self) -> None:
+        import json
+        справка = self.клиент.post("/api/chat/say", json={"session": "веб", "text": "/help"}).get_json()
+        self.assertIn("/help вопрос", справка["help_text"])
+        итог = self.клиент.post("/api/chat/say", json={"session": "веб", "text": "/help Какой стек?"}).get_json()
+        self.assertEqual(итог["help"]["answer"], "Стек — Django 5 и HTMX [1].")
+        self.assertEqual(итог["state"]["помощь"][-1]["after_turn"], 0)
+        self.assertEqual(self.создать.call_args.args[1], "веб")
+        поток = self.клиент.post("/api/chat/say", json={"session": "веб", "text": "/help Ещё?", "stream": True})
+        строки = [json.loads(с) for с in поток.get_data(as_text=True).splitlines() if с.strip()]
+        self.assertEqual(строки[-1]["событие"], "готово")
+        self.assertEqual(len(строки[-1]["state"]["помощь"]), 2)
+        новый = self.клиент.post("/api/chat/new", json={"session": "веб"}).get_json()
+        self.assertTrue(новый["reset"]["помощь_стёрта"])
+        self.assertEqual(новый["state"]["помощь"], [])
+
+    def test_страница_рисует_карточку(self) -> None:
+        html = self.клиент.get("/chat").get_data(as_text=True)
+        self.assertIn("function помощьHTML", html)
+        self.assertIn("подсказка-помощи", html)
+
+
+class МетрикиАссистента(unittest.TestCase):
+    def test_сводка_и_белый_список(self) -> None:
+        from agent.devassist import metrics
+        with tempfile.TemporaryDirectory() as к:
+            путь = os.path.join(к, "m.jsonl")
+            for всего, модель, нз in ((2.0, "ds-flash", False), (4.0, "ds-flash", True), (60.0, "loc-rag-docs", False)):
+                metrics.записать({"модель": модель, "канал": "веб", "всего_с": всего, "не_знаю": нз, "код": "ок",
+                                  "вопрос": "секрет", "ответ_текст": "секрет"}, путь)
+            строки = metrics.прочитать(путь)
+            self.assertTrue(all("вопрос" not in с and "ответ_текст" not in с for с in строки))
+            с = metrics.сводка(строки)
+            self.assertEqual(с["всего"]["ответов"], 3)
+            self.assertEqual(с["по_моделям"]["ds-flash"]["p50_с"], 3.0)
+            self.assertAlmostEqual(с["по_моделям"]["ds-flash"]["не_знаю"], 0.5)
+            self.assertEqual(metrics.перцентиль([1, 2, 3, 4], 0.5), 2.5)
+            self.assertAlmostEqual(metrics.перцентиль([1, 2, 3, 4], 0.95), 3.85, delta=0.06)
 
 
 if __name__ == "__main__":

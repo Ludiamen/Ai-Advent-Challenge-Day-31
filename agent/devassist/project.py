@@ -48,6 +48,9 @@ class Проект:
     включить: list[str] = field(default_factory=list)
     исключить: list[str] = field(default_factory=list)
     индекс: str = ""
+    # Подсказки к вопросам о схемах (plan D-04): слова вопроса → файл (urls.py, models.py) и
+    # синонимы приложений («уведомления» → notify). Только из projects.json, не из кода.
+    схемы: dict[str, Any] = field(default_factory=dict)
 
     @property
     def src(self) -> str:
@@ -59,7 +62,8 @@ class Проект:
 
     def to_dict(self) -> dict[str, Any]:
         return {"имя": self.имя, "путь": self.путь, "описание": self.описание,
-                "включить": self.включить, "исключить": self.исключить, "индекс": self.индекс}
+                "включить": self.включить, "исключить": self.исключить, "индекс": self.индекс,
+                "схемы": self.схемы}
 
 
 def путь_конфига(путь: str = "") -> str:
@@ -86,7 +90,7 @@ def загрузить(имя: str = "", путь: str = "") -> Проект:
     if not os.path.isabs(индекс):
         индекс = os.path.join(os.path.dirname(файл), индекс)
     return Проект(имя, каталог, о.get("описание", ""), list(о.get("включить") or []),
-                  list(о.get("исключить") or []), os.path.abspath(индекс))
+                  list(о.get("исключить") or []), os.path.abspath(индекс), dict(о.get("схемы") or {}))
 
 
 def git(проект: Проект | str, *аргументы: str, таймаут: float = 20.0) -> str:
@@ -185,6 +189,37 @@ def построить(проект: Проект, эмбеддер: str = "",
                   "секунд_векторов": стр.get("секунд_векторов", 0.0),
                   "секунд": round(time.monotonic() - начало, 1), "индекс": проект.индекс})
     return отчёт
+
+
+def файлы_индекса(проект: Проект) -> list[str]:
+    """Пути, попавшие в индекс при последней подготовке (manifest.json)."""
+    try:
+        with open(os.path.join(проект.индекс, СПИСОК), encoding="utf-8") as f:
+            return sorted(json.load(f).get("файлы", {}))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def файлы_схем(проект: Проект, вопрос: str, предел: int = 6) -> list[str]:
+    """Файлы схем данных и API, о которых спрашивают: «маршруты уведомлений» → …/notify/urls.py.
+
+    Косинус по всему индексу их часто не поднимает: вопрос — по-русски, файл — код. Слова
+    и синонимы — из projects.json («схемы»); приложение не названо — все такие файлы.
+    """
+    вопрос = вопрос.lower()
+    файлы_слова = (проект.схемы or {}).get("файлы") or {}
+    приложения = (проект.схемы or {}).get("приложения") or {}
+    нужные = [имя for имя, слова in файлы_слова.items() if any(с in вопрос for с in слова)]
+    if not нужные:
+        return []
+    названные = [п for п, синонимы in приложения.items()
+                 if п.lower() in вопрос or any(с in вопрос for с in синонимы)]
+    итог = []
+    for путь in файлы_индекса(проект):
+        части = путь.split("/")
+        if части[-1] in нужные and (not названные or any(п in части[:-1] for п in названные)):
+            итог.append(путь)
+    return итог[:предел]
 
 
 def индекс_есть(проект: Проект) -> bool:

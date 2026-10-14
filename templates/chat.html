@@ -48,6 +48,9 @@
     .источник { margin:3px 0; }
     .источник .паспорт { color:#111827; }
     .цитата { margin:2px 0 2px 14px; color:#065f46; font-size:.78rem; }
+    .вызов { margin:2px 0 2px 14px; font-size:.78rem; }
+    .сообщение.помощь { border-left:3px solid #6366f1; }
+    .справка-помощи { white-space:pre-wrap; font-size:.8rem; margin:4px 0; }
     .проверено { color:#92400e; }
     .код { display:inline-block; min-width:26px; font-weight:700; color:#5b21b6; }
     .строка-цели { margin-top:6px; font-size:.75rem; color:#374151; background:#f0fdf4; border-radius:5px; padding:3px 7px; }
@@ -110,6 +113,8 @@
           <textarea id="чат-реплика" placeholder="Например: Мне нужно сравнить договоры связи Ростелеком VPN и ВымпелКом. Начнём: до какого числа платить Ростелекому?"></textarea>
           <button class="главная" id="чат-отправить">Отправить</button>
         </div>
+        <div class="мета" id="подсказка-помощи">Ассистент разработчика (День 31): <code>/help вопрос</code> — о проекте CRM:
+          документация, схемы данных, API и git (только чтение); <code>/help</code> — команды чата.</div>
         <div class="мета" id="чат-ход"></div>
       </div>
     </div>
@@ -294,11 +299,40 @@ function этапыHTML(этапы) {
   return `<div class="этапы">Этапы: ${этапы.map(э => `<span class="этап" data-этап="${экранировать(э.этап)}">${этапHTML(э)}</span>`).join(' → ')}</div>`;
 }
 
+// День 31: ответ ассистента разработчика (/help) — карточка после хода, за которым его задали.
+function помощьHTML(п) {
+  const git = п.git || {};
+  const ветка = git.branch ? `ветка <b>${экранировать(git.branch)}</b> @ <code>${экранировать(git.commit)}</code>` +
+    (git.clean ? ' · рабочий каталог чист' : ` · изменено ${git.changed}`) : '<span class="предупреждение">git недоступен</span>';
+  const цитаты = (п.quotes || []).filter(ц => ц.confirmed);
+  const источники = (п.sources || []).map(и => `<div class="источник документ"><span class="паспорт">[${и.n}] ${паспорт(и)}</span>` +
+    цитаты.filter(ц => (ц.found_in || ц.n) === и.n).slice(0, 2).map(ц =>
+      `<div class="цитата">${экранировать(ОТМЕТКИ[ц.check] || ц.check)} «${экранировать(ц.text)}»</div>`).join('') + '</div>').join('');
+  const вызовы = (п.tool_calls || []).filter((в, i) => !(git.branch && i < 2)).map(в =>
+    `<div class="вызов" data-инструмент="${экранировать(в.name)}">${в.ok ? '✓' : '✗'} <code>${экранировать(в.name.split('__').pop())}(${
+      экранировать(Object.entries(в.args || {}).map(([к, з]) => `${к}=${з}`).join(', '))})</code> → ${экранировать(в.summary)}</div>`).join('');
+  const пометки = (п.notes || []).map(н => `<div class="предупреждение">⚠ ${экранировать(н)}</div>`).join('');
+  const т = п.timings || {};
+  return `<div class="сообщение пользователь помощь-вопрос"><div class="кто">Вы · /help</div>
+      <div class="текст">/help ${экранировать(п.question)}</div></div>
+    <div class="сообщение ассистент помощь${п.abstain ? ' не-знаю' : ''}" data-помощь="1" data-не-знаю="${п.abstain ? 1 : 0}">
+      <div class="понято">ассистент разработчика · проект «${экранировать(п.project)}» · ${ветка}</div>
+      <div class="текст">${экранировать(п.answer)}</div>
+      ${источники ? `<div class="источники"><div class="заголовок">Источники — документация проекта</div>${источники}</div>` : ''}
+      ${вызовы ? `<div class="источники"><div class="заголовок">Вызовы git (MCP, только чтение)</div>${вызовы}</div>` : ''}
+      ${пометки}
+      <div class="мета">${экранировать(п.model || '')} · вход ${число((п.usage || {}).prompt_tokens)} ток. · git ${Number(т.git || 0).toFixed(1)} с · поиск ${
+        Number(т['поиск'] || 0).toFixed(1)} с · модель ${Number(т['модель'] || 0).toFixed(1)} с · всего ${Number(т['всего'] || 0).toFixed(1)} с</div>
+    </div>`;
+}
+
 function нарисоватьЛенту() {
   const лента = document.getElementById('чат-лента');
   const ходы = состояние.ходы || [];
+  const помощь = состояние.помощь || [];
   последний_ход = ходы.length ? ходы[ходы.length - 1].turn : 0;
-  лента.innerHTML = ходы.length ? ходы.map(ходHTML).join('')
+  const после = н => помощь.filter(п => (п.after_turn || 0) === н).map(помощьHTML).join('');
+  лента.innerHTML = (ходы.length || помощь.length) ? после(0) + ходы.map(х => ходHTML(х) + после(х.turn)).join('')
     : '<div class="мета" style="padding:10px 0">Разговор пуст. Назовите цель и задайте первый вопрос — например, «Мне нужно сравнить договоры связи Ростелеком VPN и ВымпелКом. Начнём: до какого числа платить Ростелекому?»</div>';
   лента.scrollTop = лента.scrollHeight;
   const п = состояние.память || {};
@@ -399,6 +433,17 @@ async function отправить() {
     поле.value = '';
     состояние = итог.state;
     нарисовать();
+    if (итог.help_text) {
+      ход.innerHTML = `<pre class="справка-помощи">${экранировать(итог.help_text)}</pre>`;
+      return;
+    }
+    if (итог.help) {
+      const п = итог.help;
+      ход.innerHTML = `/help: ${п.abstain ? '«не знаю»' : 'ответ'}, источников ${(п.sources || []).length}, вызовов git ${
+        Math.max(0, (п.tool_calls || []).length - 2)}, ${Number((п.timings || {})['всего'] || 0).toFixed(1)} с` +
+        (п.fallback ? ` · <span class="предупреждение">${экранировать(п.fallback)}</span>` : '');
+      return;
+    }
     const х = итог.turn;
     const н = итог.net || {};
     ход.innerHTML = `реплика ${х.turn}: ${экранировать((х.parse || {}).kind || х.kind)}, источников ${х.sources.length}, ` +

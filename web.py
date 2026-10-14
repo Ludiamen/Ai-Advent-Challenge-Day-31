@@ -1305,6 +1305,11 @@ def _сессия_чата(значение) -> str:
     return (str(значение or "").strip() or "основная")[:64]
 
 
+def _ответы_помощи(сессия: str) -> list:
+    from agent.devassist import command
+    return command.ответы_сессии(agent.memory.base_dir, сессия)
+
+
 def _состояние_чата(сессия: str) -> dict:
     from agent.chat import scenarios as chat_scenarios
     чат = agent.чат(сессия)
@@ -1316,6 +1321,7 @@ def _состояние_чата(сессия: str) -> dict:
         "сессия": сессия, "сессии": agent.чаты(),
         "память": {**данные, "коды": list(память.коды()), "пуста": память.пуста},
         "ходы": ходы,
+        "помощь": _ответы_помощи(сессия),
         "история": [{"role": с["role"], "content": с["content"], "when": с["created_at"]}
                     for с in чат.история()],
         "сценарии": chat_scenarios.прочитать(agent.memory.base_dir),
@@ -1354,6 +1360,9 @@ def api_chat_say():
     if offline.включён() and модель in catalog.MODELS and not catalog.get(модель).local:
         return jsonify({"error": f"Офлайн-режим: облачная модель «{модель}» недоступна — выберите "
                                  "локальную или «по ролям»."}), 400
+    помощь = _помощь_в_чате(сессия, текст, модель, bool(данные.get("stream")))
+    if помощь is not None:
+        return помощь
     if данные.get("stream"):
         return _ход_чата_потоком(сессия, текст, модель)
     прежняя = agent.model_key
@@ -1367,6 +1376,63 @@ def api_chat_say():
     итог = ход.to_dict()
     итог.pop("rag", None)
     return jsonify({"turn": итог, "state": _состояние_чата(сессия)})
+
+
+def _помощь_в_чате(сессия: str, текст: str, модель: str, поток: bool) -> Response | None:
+    """`/help` на странице чата (День 31, spec FR-09): то же, что в консоли — паритет.
+
+    None — это не /help. Ответ ассистента хранится в ленте сессии (command.сохранить), и
+    страница рисует его карточкой после хода, за которым его задали."""
+    import json as _json
+    import queue
+    from agent.devassist import command
+    from agent.devassist.project import ОшибкаПроекта
+    from agent.local import offline, progress
+    разбор = command.разобрать(текст)
+    if разбор is None:
+        return None
+    вид, вопрос = разбор
+    if вид == command.СПРАВКА:
+        итог = {"событие": "готово", "help_text": command.справка("crm"), "state": _состояние_чата(сессия)}
+        if поток:
+            return Response(_json.dumps(итог, ensure_ascii=False) + "\n", mimetype="application/x-ndjson")
+        return jsonify(итог)
+    модель = модель if модель in catalog.MODELS else ""
+
+    def ответить() -> dict:
+        ассистент = command.создать(модель, "веб")
+        try:
+            ответ = ассистент.спросить(вопрос)
+        finally:
+            ассистент.закрыть()
+        command.в_историю(agent.чат(сессия), вопрос, ответ, agent.memory.base_dir)
+        return {"событие": "готово", "help": ответ.to_dict(), "state": _состояние_чата(сессия),
+                "net": offline.журнал(0)}
+
+    if not поток:
+        try:
+            return jsonify(ответить())
+        except (ОшибкаПроекта, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+    очередь: queue.Queue = queue.Queue()
+
+    def работать() -> None:
+        метка = progress.наблюдать(очередь.put)
+        try:
+            очередь.put(ответить())
+        except Exception as exc:   # noqa: BLE001 — поток не должен умереть молча
+            очередь.put({"событие": "ошибка", "error": f"{type(exc).__name__}: {exc}"})
+        finally:
+            progress.снять(метка)
+            очередь.put(None)
+
+    threading.Thread(target=работать, daemon=True).start()
+
+    def строки():
+        while (событие := очередь.get()) is not None:
+            yield _json.dumps(событие, ensure_ascii=False, default=str) + "\n"
+
+    return Response(stream_with_context(строки()), mimetype="application/x-ndjson")
 
 
 def _ход_чата_потоком(сессия: str, текст: str, модель: str) -> Response:
@@ -1415,6 +1481,8 @@ def api_chat_new():
     данные = request.get_json(silent=True) or {}
     сессия = _сессия_чата(данные.get("session"))
     итог = agent.чат(сессия).новый()
+    from agent.devassist import command
+    итог["помощь_стёрта"] = command.очистить(agent.memory.base_dir, сессия)
     return jsonify({"reset": итог, "state": _состояние_чата(сессия)})
 
 

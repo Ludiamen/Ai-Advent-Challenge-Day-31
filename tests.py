@@ -2993,8 +2993,9 @@ class КонфигурацияMCP(unittest.TestCase):
         """Настоящий mcp-servers.json дня описан верно и секретов в себе не держит."""
         серверы = amcp.load(os.path.join(КОРЕНЬ_ДНЯ, "mcp-servers.json"))
         имена = [с.имя for с in серверы]
+        # День 31: свой сервер git (только чтение) — после agent-state.
         self.assertEqual(имена, ["tracker", "tracker-real", "scheduler", "pipeline", "docs",
-                                 "agent-state", "filesystem", "everything", "deepwiki",
+                                 "agent-state", "git", "filesystem", "everything", "deepwiki",
                                  "github"])
         планировщик = next(с for с in серверы if с.имя == "scheduler")
         # Поля дня 18: «планирует» закрывает обход подтверждения через
@@ -7342,7 +7343,7 @@ print("bind-lifecycle-ok")
         import run_tests
         self.assertEqual(run_tests.МОДУЛИ, (
             "tests", "test_gateway_validation", "test_service_journal_security", "test_telegram_offset",
-            "test_telegram_reliability", "test_telegram_security",
+            "test_telegram_reliability", "test_telegram_security", "test_devassist",
         ))
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as ошибка:
             run_tests._аргументы(["--живые"])
@@ -7486,7 +7487,7 @@ class МаршрутСерверов(unittest.TestCase):
     def test_описания_серверов_без_секретов(self):
         м, _ = self.маршрутизатор()
         описания = {о["имя"]: о for о in м.описания()}
-        self.assertEqual(len(описания), 10)
+        self.assertEqual(len(описания), 11)   # День 31: + git
         self.assertTrue(описания["tracker-real"]["по_просьбе"])
         self.assertTrue(описания["pipeline"]["своё"])
         self.assertFalse(описания["github"]["готов"])
@@ -8017,7 +8018,7 @@ class АгентИОркестр(unittest.TestCase):
         with self.модель(_план_ответ("ц"), Reply(text="всё", model_key="тест")):
             self.агент.флоу("Просто спроси")
         состояние = self.агент.состояние_флоу()
-        self.assertEqual(len(состояние["серверы"]), 10)
+        self.assertEqual(len(состояние["серверы"]), 11)   # День 31: + git
         self.assertEqual(len(состояние["правила"]["правила"]), 4)
         self.assertEqual(состояние["счётчики"]["флоу"], 1)
         self.assertEqual(состояние["бюджет"]["кругов"], оркестр_флоу.ПРЕДЕЛ_КРУГОВ)
@@ -8030,7 +8031,7 @@ class АгентИОркестр(unittest.TestCase):
                                model_key="тест")):
             маршрут = self.агент.маршрут_запроса("Что в работе?")
         self.assertEqual(маршрут["серверы"], ["tracker"])
-        self.assertEqual(len(маршрут["все_серверы"]), 10)
+        self.assertEqual(len(маршрут["все_серверы"]), 11)   # День 31: + git
         self.assertEqual(self.ящик.вызовы, [])
 
     def test_включение_инструментов_переиспользует_ящик(self):
@@ -8106,9 +8107,9 @@ class НастройкиОркестровки(unittest.TestCase):
         ящик.доверенные = set()
         self.assertTrue(ящик.меняет("deepwiki__ask_wiki_question", {}))
 
-    def test_файл_проекта_описывает_десять_серверов(self):
+    def test_файл_проекта_описывает_одиннадцать_серверов(self):
         серверы = amcp.load(os.path.join(КОРЕНЬ_ДНЯ, "mcp-servers.json"))
-        self.assertEqual(len(серверы), 10)
+        self.assertEqual(len(серверы), 11)   # День 31: + git
         self.assertTrue(all(с.описание for с in серверы))
         # У каждого готового сервера есть темы: без них не работает запасной
         # путь маршрутизатора, а он и нужен как раз тогда, когда модель молчит.
