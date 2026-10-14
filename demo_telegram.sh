@@ -133,41 +133,39 @@ sleep 2
 # и превью личных переписок — попал в кадр, пока Telegram Web загружался.
 echo "3/5 Открываю чат с ботом и скрываю список чатов (до записи)…"
 # CDP_TIMEOUT: вызовы показа короткие — подвисшая под нагрузкой страница не должна вешать показ.
+# День 31: запись — через CDP (Page.startScreencast, RECORD_CDP): кадры отдаёт сам Chrome, и
+# водитель начинает её только после того, как список чатов скрыт. Захват области экрана
+# (x11grab) в показе Дня 31 поймал окно редактора под ещё не поднятым Chrome.
+FILE=""
+if [ "$RECORD" = 1 ]; then
+  mkdir -p "$ROOT/demo"
+  FILE="$ROOT/demo/телеграм31-$(date +%Y%m%d-%H%M).mp4"
+fi
 CDP="http://127.0.0.1:$DEBUG_PORT" PAUSE="$PAUSE" MARKS="$SCRATCH/marks.json" SERVICE_KEYS="$SCRATCH/keys.json" \
-  ADMIN_URL="$URL/admin" BOT_TITLE="$BOT_TITLE" CDP_TIMEOUT=60000 \
+  ADMIN_URL="$URL/admin" BOT_TITLE="$BOT_TITLE" CDP_TIMEOUT=60000 RECORD_CDP="$FILE" \
   READY="$SCRATCH/ready" RECORDING="$SCRATCH/recording" \
-  node "$ROOT/browser.mjs" "https://web.telegram.org/k/#@$BOT_USERNAME" ds-flash "" телеграм &
+  node "$ROOT/browser.mjs" "https://web.telegram.org/k/#@$BOT_USERNAME" ds-flash "" "${MODE:-телеграм31}" &
 DRIVER_PID=$!
 for _ in $(seq 1 300); do
   [ -f "$SCRATCH/ready" ] && break
-  kill -0 "$DRIVER_PID" 2>/dev/null || break
+  [ -d "/proc/$DRIVER_PID" ] || break
   sleep 0.2
 done
 if [ ! -f "$SCRATCH/ready" ]; then
   echo "Чат с ботом не открылся или список чатов не скрыт — запись не начата."
   wait "$DRIVER_PID"; exit 1
 fi
-if [ "$RECORD" = 1 ]; then
-  echo "   запись экрана…"
-  REC_START_MS="$(date +%s%3N)"
-  bash "$ROOT/record_demo.sh" --name телеграм --pid "$CHROME_PID" > "$SCRATCH/запись.log" 2>&1 &
-  REC_PID=$!
-  sleep 2
-else
-  echo "   запись выключена ключом --no-record"
-fi
+[ "$RECORD" = 1 ] && echo "   запись страницы через CDP: $FILE" || echo "   запись выключена ключом --no-record"
 touch "$SCRATCH/recording"
-echo "4/5 Прохожу шесть сцен (10–20 минут: модель на CPU отвечает по-настоящему)…"
+echo "4/5 Прохожу сцены (ответы ассистента облаком — секунды, /status — сразу)…"
 wait "$DRIVER_PID"
 SHOW_CODE=$?
 
 if [ "$RECORD" = 1 ]; then
-  echo "5/5 Останавливаю запись…"
-  kill -TERM "$REC_PID" 2>/dev/null
-  wait "$REC_PID" 2>/dev/null
-  REC_PID=""
-  FILE="$(ls -t "$ROOT/demo"/телеграм-*.mp4 2>/dev/null | grep -v -- '-ускорено' | head -1)"
-  [ -n "$FILE" ] && echo "Запись: $FILE ($(du -h "$FILE" | cut -f1))"
+  echo "5/5 Запись готова"
+  REC_START_MS="$(cat "$FILE.start" 2>/dev/null || echo 0)"
+  rm -f "$FILE.start"
+  [ -f "$FILE" ] && echo "Запись: $FILE ($(du -h "$FILE" | cut -f1))"
   if [ -n "$FILE" ] && [ -f "$SCRATCH/marks.json" ]; then
     echo "   ускоренная копия (ожидание модели ×8)…"
     "$PY" - "$SCRATCH/marks.json" "$REC_START_MS" "${FILE%.mp4}-метки.json" <<'PYCODE'

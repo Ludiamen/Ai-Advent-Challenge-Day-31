@@ -465,6 +465,30 @@ class Ассистент(unittest.TestCase):
         self.assertEqual(второй[-1]["role"], "tool")
         self.assertIn("последняя правка", второй[-1]["content"])
 
+    def test_локальной_модели_короче_вывод_и_меньше_кругов(self) -> None:
+        from agent.devassist.assistant import КРУГОВ_ЛОКАЛЬНО, ПРЕДЕЛ_ИНСТРУМЕНТА_ЛОКАЛЬНО
+        from agent.llm import ToolCall
+        гит = _Git(вывод="x" * 10000, данные={})
+        просьбы = [_Ответ("", [ToolCall(f"t{i}", "git__git_show", {"path": "a.md"})]) for i in range(КРУГОВ_ЛОКАЛЬНО)]
+        а = self.ассистент(просьбы + [_Ответ(_json("Файл прочитан (git)"))], git=гит, модель="loc-rag-docs")
+        а.спросить("что в файле?")
+        self.assertEqual(len(self.клиент.звали), КРУГОВ_ЛОКАЛЬНО + 1)
+        вывод = self.клиент.звали[1]["сообщения"][-1]["content"]
+        self.assertLess(len(вывод), ПРЕДЕЛ_ИНСТРУМЕНТА_ЛОКАЛЬНО + 100)
+        self.assertIn("обрезан", вывод)
+
+    def test_обещание_без_вызова_напоминание(self) -> None:
+        from agent.llm import ToolCall
+        гит = _Git(вывод="# Конституция\n16 принципов", данные={"путь": "docs/constitution.md", "строк": 169})
+        а = self.ассистент([_Ответ(_json("По фрагментам не сосчитать. Посмотрю файл целиком в git.")),
+                            _Ответ("", [ToolCall("t1", "git__git_show", {"path": "docs/constitution.md"})]),
+                            _Ответ(_json("В конституции 16 принципов (git)"))], git=гит)
+        о = а.спросить("Сколько принципов?")
+        self.assertIn(("git__git_show", {"path": "docs/constitution.md"}), гит.вызовы)
+        self.assertIn("16", о.текст)
+        self.assertTrue(any("напомнили" in п for п in о.пометки))
+        self.assertEqual(self.клиент.звали[1]["сообщения"][-1]["role"], "user")    # напоминание
+
     def test_меняющий_инструмент_не_вызывается(self) -> None:
         from agent.llm import ToolCall
         а = self.ассистент([_Ответ("", [ToolCall("t1", "git__git_commit", {})]),
@@ -491,6 +515,14 @@ class Ассистент(unittest.TestCase):
         self.assertTrue(о.не_знаю)
         self.assertTrue(о.текст.startswith("Не знаю"))
         self.assertEqual(len(self.клиент.звали), 2)      # один повторный запрос с нарушениями
+
+    def test_оборванный_json_не_уходит_в_ответ(self) -> None:
+        оборван = '{"ответ": "Проект устроен так (git): раз, два, три'
+        а = self.ассистент([_Ответ(оборван), _Ответ(оборван)])
+        о = а.спросить("Как устроен проект?")
+        self.assertTrue(о.не_знаю)
+        self.assertNotIn('{"ответ"', о.текст)
+        self.assertTrue(any("не в формате JSON" in п for п in о.пометки))
 
     def test_запасной_путь_облако_недоступно(self) -> None:
         from agent.llm import LLMError
