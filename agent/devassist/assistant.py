@@ -81,7 +81,9 @@ class GitMCP:
             осмотры = self.ящик.открыть()
             сбой = [о for о in осмотры if not getattr(о, "ок", True)]
             if not self.ящик.инструменты:
-                причина = getattr(сбой[0], "причина", "") if сбой else "нет инструментов"
+                о = сбой[0] if сбой else None
+                причина = ((о.ошибка or о.этап or "") + (f" — {о.журнал.strip().splitlines()[-1][:160]}"
+                                                         if о and о.журнал.strip() else "")) if о else "нет инструментов"
                 raise ОшибкаGit(f"сервер git не подключился: {причина}")
             self._открыт = True
 

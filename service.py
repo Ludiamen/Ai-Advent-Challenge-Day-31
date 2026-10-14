@@ -121,7 +121,8 @@ def собрать(порт: int | None = None):
         прогоны = load.прогоны(каталог_нагрузки)
         п = load.полный(каталог_нагрузки)
         полный = {"файл": п["файл"], **load.сводка(п)} if п else None
-        return {"network": offline.снимок_журнала(), "unit": unit.статус(),
+        return {"network": {**offline.снимок_журнала(), "внешние_хосты": offline.внешние_хосты()},
+                "unit": unit.статус(),
                 "cert": {**certs.сведения(crt), "адрес_в_сети": certs.адрес_в_сети()},
                 "runner": ({"pid": pid, **(resources.показания(pid) or {})} if pid else None),
                 "load": {"идёт": manage.идёт_нагрузка(), "последний": прогоны[0] if прогоны else None,
