@@ -40,7 +40,7 @@ bash demo_show.sh ; bash demo_telegram.sh                         # показ: 
 | MCP — минимум git branch | `git_server.py`: `git_branch` всегда, в каждом ответе — ветка и коммит | `--mcp`, часть 2 проверки |
 | по желанию — список файлов или diff | `git_ls_files`, `git_diff`, `git_log`, `git_show` — модель вызывает сама | вопросы g01–g03, сцена 6 показа |
 | `/help` — ответ о проекте по документации и контексту | консоль, веб `/chat`, Telegram (`/v1/project/help`) | MANUAL-CHECK часть 31, CLI-CHECK часть 31 |
-| `/help` отвечает о структуре проекта | контрольный набор: ДЕНЬ31_НАБОР | RESULTS.md |
+| `/help` отвечает о структуре проекта | контрольный набор: ds-flash — структура 10 из 10, ловушки 2 из 2, git 3 из 3, отказ 1 из 1; локальная модель — 6/2/2/0 | RESULTS.md |
 | видео + код | `demo/ассистент-20261014-2153.mp4` (3,5 мин), `demo/телеграм31-20261014-2215.mp4` (1,2 мин) | раздел «Показ» |
 
 ## Как это работает
@@ -119,12 +119,12 @@ bash demo_show.sh ; bash demo_telegram.sh                         # показ: 
 
 | Чем | Итог |
 |---|---|
-| `.venv/bin/python -B run_tests.py` | ДЕНЬ31_ТЕСТЫ |
-| `python check_devassist.py` | ДЕНЬ31_DEVASSIST |
-| `python check_service.py` | ДЕНЬ31_SERVICE |
-| `python check_telegram.py --живой` | ДЕНЬ31_TELEGRAM |
-| `node browser.mjs … ассистент`, `mcp`, `сервис` | ДЕНЬ31_БРАУЗЕР |
-| `python check_cli.py` | ДЕНЬ31_CLI — [CLI-CHECK-RESULTS.md](CLI-CHECK-RESULTS.md) |
+| `.venv/bin/python -B run_tests.py` | полный прогон 2026-10-14 — 1233 теста: 2 провала и 1 ошибка (ожидания тестов показа и имён служб) — исправлены; модули с ними — OK; полный повтор — после переезда |
+| `python check_devassist.py` | 25 проверок, провалов 0: индекс (ПД 0), git-сервер (совпадает с git, только чтение), набор ds-flash 10/10 · 2/2 · 3/3 · 1/1, запасной путь, ручка сервиса, метрики, CRM не тронута |
+| `python check_service.py` | 25 проверок, провалов 0 — внешний хост сервиса только `api.deepseek.com` |
+| `python check_telegram.py --живой` | 25 проверок, провалов 0 — часть 4а: `/help` в боте |
+| `node browser.mjs … ассистент`, `mcp`, `сервис` | ошибок нет: `/help` на `/chat` (справка, стек, модели `org`, коммит, отказ, карточки после перезагрузки), 11 из 11 серверов MCP, карточка ассистента на `/admin` |
+| `python check_cli.py` | прогон 2026-10-15 остановлен перед переездом на шаге 145 из 220 (части 31–22 пройдены), расхождений 0; полный повтор — после переезда — [CLI-CHECK-RESULTS.md](CLI-CHECK-RESULTS.md) |
 
 Ручные сценарии — [MANUAL-CHECK.md](MANUAL-CHECK.md) и [CLI-CHECK.md](CLI-CHECK.md), часть 31.
 
